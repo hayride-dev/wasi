@@ -1,190 +1,123 @@
 package transport
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 
-	"github.com/hayride-dev/wit/gen/go/http/client"
+	outgoinghandler "github.com/hayride-dev/wit/gen/platform/wasi/http/outgoing-handler"
+	"github.com/hayride-dev/wit/gen/platform/wasi/http/types"
+	"github.com/ydnar/wasm-tools-go/cm"
 )
 
-// Transport implements http.RoundTripper
-type Transport struct {
+var _ http.RoundTripper = &RoundTrip{}
+
+type RoundTrip struct {
 }
 
-// NewTransport returns http.RoundTripper based on wasi-http
-func NewTransport() http.RoundTripper {
-	return &Transport{}
+func NewWasiRoundTripper() *RoundTrip {
+	return &RoundTrip{}
 }
 
-// RouteTrip implements http.RoundTripper for wasi-http runtimes
-func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	headers := wasiHeaders(req.Header)
-	method := wasiMethod(req.Method)
-	scheme := wasiScheme(req.URL.Scheme)
-	path_with_query := client.Some(req.URL.RequestURI())
-	authority := client.Some(req.URL.Host)
+func (r *RoundTrip) RoundTrip(req *http.Request) (*http.Response, error) {
+	// headers
+	wasiHeaders := wasiHeader(req.Header)
+	// method
+	wasiMethod := wasiMethod(req.Method)
+	// path
+	wasiPath := cm.Some(req.URL.RequestURI())
+	// scheme
+	wasiScheme := cm.Some(wasiScheme(req.URL.Scheme))
+	// authority
+	wasiAuthority := cm.Some(req.URL.Host)
 
-	wasiRequest := client.NewOutgoingRequest(headers)
-	wasiRequest.SetMethod(method)
-	wasiRequest.SetPathWithQuery(path_with_query)
-	wasiRequest.SetScheme(client.Some(scheme))
-	wasiRequest.SetAuthority(authority)
+	wasiRequest := types.NewOutgoingRequest(wasiHeaders)
+	wasiRequest.SetMethod(wasiMethod)
+	wasiRequest.SetPathWithQuery(wasiPath)
+	wasiRequest.SetScheme(wasiScheme)
+	wasiRequest.SetAuthority(wasiAuthority)
 
-	body := wasiRequest.Body().Unwrap()
-	defer body.Drop()
-
-	if req.Body != nil {
-		stream := body.Write().Unwrap()
-		defer stream.Drop()
-		b, err := io.ReadAll(req.Body)
-		if err != nil {
-			return nil, err
-		}
-		if result := stream.BlockingWriteAndFlush(b); result.IsErr() {
-			return nil, errors.New(result.UnwrapErr().GetLastOperationFailed().ToDebugString())
-		}
-	}
-	result := client.StaticOutgoingBodyFinish(body, client.None[client.WasiHttp0_2_0_TypesTrailers]())
+	result := outgoinghandler.Handle(wasiRequest, cm.None[types.RequestOptions]())
 	if result.IsErr() {
-		return nil, errors.New("failed to finish request body")
+		return nil, fmt.Errorf("error %v", result.Err())
 	}
 
-	options := client.None[client.WasiHttp0_2_0_TypesRequestOptions]()
-	futureResponse := client.WasiHttp0_2_0_OutgoingHandlerHandle(wasiRequest, options).Unwrap()
-
-	poll := futureResponse.Subscribe()
-	poll.Block()
-	incomingResponse := futureResponse.Get()
-	var wasiResponse client.WasiHttp0_2_0_TypesIncomingResponse
-	if incomingResponse.IsSome() {
-		result2 := incomingResponse.Unwrap()
-		if result2.IsErr() {
-			return nil, errors.New("failed to get response")
+	if result.IsOK() {
+		result.OK().Subscribe().Block()
+		incomingResponse := result.OK().Get()
+		if incomingResponse.Some().IsErr() {
+			return nil, fmt.Errorf("error %v", incomingResponse.Some().Err())
 		}
-		result3 := result2.Unwrap()
-		if result3.IsErr() {
-			return nil, errors.New("failed to get response")
+		if incomingResponse.Some().OK().IsErr() {
+			return nil, fmt.Errorf("error %v", incomingResponse.Some().OK().Err())
 		}
-		wasiResponse = result3.Unwrap()
-	}
-	poll.Drop()
-
-	status := int(wasiResponse.Status())
-	responseHeaders := wasiResponse.Headers()
-	defer responseHeaders.Drop()
-
-	responseHeaderEntries := responseHeaders.Entries()
-	header := http.Header{}
-
-	for _, tuple := range responseHeaderEntries {
-		ck := http.CanonicalHeaderKey(tuple.F0)
-		header[ck] = append(header[ck], string(tuple.F1))
-	}
-
-	var contentLength int64
-	contentLengthStr := header.Get("Content-Length")
-	switch {
-	case contentLengthStr != "":
-		value, err := strconv.ParseInt(contentLengthStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("malformed content-length header value: %v", err)
+		ok := incomingResponse.Some().OK().OK()
+		var body io.ReadCloser
+		if consume := ok.Consume(); consume.IsErr() {
+			return nil, fmt.Errorf("error %v", consume.Err())
+		} else if stream := consume.OK().Stream(); stream.IsErr() {
+			return nil, fmt.Errorf("error %v", stream.Err())
+		} else {
+			body = NewReadCloser(*stream.OK())
 		}
-		if value < 0 {
-			return nil, fmt.Errorf("invalid content-length header value: %q", contentLengthStr)
+
+		response := &http.Response{
+			StatusCode:    int(ok.Status()),
+			Status:        http.StatusText(int(ok.Status())),
+			ContentLength: 0,
+			Body:          body,
+			Request:       req,
 		}
-		contentLength = value
-	default:
-		contentLength = -1
-	}
 
-	responseBodyResult := wasiResponse.Consume()
-	if responseBodyResult.IsErr() {
-		return nil, errors.New("failed to consume response body")
+		return response, nil
 	}
-	responseBody := responseBodyResult.Unwrap()
-
-	responseBodyStreamResult := responseBody.Stream()
-	if responseBodyStreamResult.IsErr() {
-		return nil, errors.New("failed to get response body stream")
-	}
-	responseBodyStream := responseBodyStreamResult.Unwrap()
-
-	responseReader := wasiReadCloser{
-		Stream:           responseBodyStream,
-		Body:             responseBody,
-		OutgoingRequest:  wasiRequest,
-		IncomingResponse: wasiResponse,
-		Future:           futureResponse,
-	}
-
-	response := &http.Response{
-		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
-		StatusCode:    status,
-		Header:        header,
-		ContentLength: contentLength,
-		Body:          responseReader,
-		Request:       req,
-	}
-
-	return response, nil
+	return nil, fmt.Errorf("failed to get response")
 }
 
-func wasiMethod(method string) client.WasiHttp0_2_0_TypesMethod {
+func wasiHeader(headers http.Header) types.Fields {
+	fields := types.NewFields()
+	for key, values := range headers {
+		fieldValues := []types.FieldValue{}
+		for _, v := range values {
+			fieldValues = append(fieldValues, types.FieldValue(cm.ToList([]uint8(v))))
+		}
+		fields.Set(types.FieldKey(key), cm.ToList(fieldValues))
+	}
+	return fields
+}
+
+func wasiMethod(method string) types.Method {
 	switch method {
 	case "GET":
-		return client.WasiHttp0_2_0_TypesMethodGet()
+		return types.MethodGet()
 	case "POST":
-		return client.WasiHttp0_2_0_TypesMethodPost()
+		return types.MethodPost()
 	case "PUT":
-		return client.WasiHttp0_2_0_TypesMethodPut()
+		return types.MethodPut()
 	case "DELETE":
-		return client.WasiHttp0_2_0_TypesMethodDelete()
+		return types.MethodDelete()
 	case "PATCH":
-		return client.WasiHttp0_2_0_TypesMethodPatch()
+		return types.MethodPatch()
 	case "HEAD":
-		return client.WasiHttp0_2_0_TypesMethodHead()
+		return types.MethodHead()
 	case "OPTIONS":
-		return client.WasiHttp0_2_0_TypesMethodOptions()
+		return types.MethodOptions()
 	case "TRACE":
-		return client.WasiHttp0_2_0_TypesMethodTrace()
+		return types.MethodTrace()
 	case "CONNECT":
-		return client.WasiHttp0_2_0_TypesMethodConnect()
+		return types.MethodConnect()
 	default:
-		return client.WasiHttp0_2_0_TypesMethodOther(method)
+		return types.MethodOther(method)
 	}
 }
 
-func wasiScheme(scheme string) client.WasiHttp0_2_0_TypesScheme {
+func wasiScheme(scheme string) types.Scheme {
 	switch scheme {
 	case "http":
-		return client.WasiHttp0_2_0_TypesSchemeHttp()
+		return types.SchemeHTTP()
 	case "https":
-		return client.WasiHttp0_2_0_TypesSchemeHttps()
+		return types.SchemeHTTPS()
 	default:
-		return client.WasiHttp0_2_0_TypesSchemeOther(scheme)
+		return types.SchemeOther(scheme)
 	}
-}
-
-func wasiHeaders(headers map[string][]string) client.WasiHttp0_2_0_TypesFields {
-	if headers == nil {
-		return client.StaticFieldsFromList([]client.WasiHttp0_2_0_TypesTuple2FieldKeyFieldValueT{}).Unwrap()
-	}
-	wasiHeaders := []client.WasiHttp0_2_0_TypesTuple2FieldKeyFieldValueT{}
-	for k, v := range headers {
-		header := client.WasiHttp0_2_0_TypesTuple2FieldKeyFieldValueT{
-			F0: k,
-			F1: []uint8(v[0]),
-		}
-		if len(v) > 1 {
-			for _, value := range v[1:] {
-				header.F1 = append(header.F1, value...)
-			}
-		}
-		wasiHeaders = append(wasiHeaders, header)
-	}
-	requestHeaders := client.StaticFieldsFromList(wasiHeaders).Unwrap()
-	return requestHeaders
 }
