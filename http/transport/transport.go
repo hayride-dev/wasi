@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	outgoinghandler "github.com/hayride-dev/wit/gen/go/platform/wasi/http/outgoing-handler"
-	"github.com/hayride-dev/wit/gen/go/platform/wasi/http/types"
+	outgoinghandler "github.com/hayride-dev/wit/gen/go/wasi/http/outgoing-handler"
+	"github.com/hayride-dev/wit/gen/go/wasi/http/types"
 	"github.com/ydnar/wasm-tools-go/cm"
 )
 
