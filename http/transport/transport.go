@@ -5,9 +5,9 @@ import (
 	"io"
 	"net/http"
 
-	outgoinghandler "github.com/hayride-dev/wit/gen/go/wasi/http/outgoing-handler"
-	"github.com/hayride-dev/wit/gen/go/wasi/http/types"
-	"github.com/ydnar/wasm-tools-go/cm"
+	"github.com/bytecodealliance/wasm-tools-go/cm"
+	outgoinghandler "github.com/hayride-dev/bindgen/gen/go/wasi/http/outgoing-handler"
+	"github.com/hayride-dev/bindgen/gen/go/wasi/http/types"
 )
 
 var _ http.RoundTripper = &RoundTrip{}
