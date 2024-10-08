@@ -1,10 +1,9 @@
 module github.com/hayride-dev/wasi
 
-go 1.22.4
+go 1.23.1
 
-replace github.com/hayride-dev/wit => ../wit
+replace github.com/hayride-dev/bindgen => ../bindgen
 
-require (
-	github.com/hayride-dev/wit v0.0.0-20240628202638-eb8b5cc45cee
-	github.com/ydnar/wasm-tools-go v0.1.3
-)
+require github.com/hayride-dev/bindgen v0.0.1
+
+require github.com/bytecodealliance/wasm-tools-go v0.2.4

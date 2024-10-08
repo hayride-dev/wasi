@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hayride-dev/wit/gen/go/wasi/io/streams"
+	"github.com/hayride-dev/bindgen/gen/go/wasi/io/streams"
 )
 
 type wasiReadCloser struct {
