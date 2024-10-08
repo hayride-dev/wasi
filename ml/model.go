@@ -1,7 +1,9 @@
 package ml
 
 import (
+	"bytes"
 	"context"
+	"text/template"
 
 	"github.com/bytecodealliance/wasm-tools-go/cm"
 	"github.com/hayride-dev/bindgen/gen/go/wasi/nn/graph"
@@ -12,6 +14,7 @@ import (
 type Model struct {
 	graphExecCtx *inference.GraphExecutionContext
 	inputTensor  *tensor.Tensor
+	options      *ModelOptions
 }
 
 func New(ctx context.Context, options ...Option[*ModelOptions]) (*Model, error) {
@@ -27,22 +30,33 @@ func New(ctx context.Context, options ...Option[*ModelOptions]) (*Model, error) 
 		e := &mlErr{graphResult.Err()}
 		return nil, e
 	}
-
 	graph := graphResult.OK()
+
 	execCtxResult := graph.InitExecutionContext()
 	if execCtxResult.IsErr() {
 		return nil, &mlErr{execCtxResult.Err()}
 	}
 	execCtx := execCtxResult.OK()
 
-	return &Model{graphExecCtx: execCtx}, nil
+	return &Model{graphExecCtx: execCtx, options: opts}, nil
 }
 
 func (m *Model) Input(text string, data any) error {
+	templ, err := template.New("prompt").Parse(m.options.systemPrompt + text)
+	if err != nil {
+		return err
+	}
+
+	b := &bytes.Buffer{}
+	if err := templ.Execute(b, data); err != nil {
+		return err
+	}
+
 	d := tensor.TensorDimensions(cm.ToList([]uint32{1}))
-	td := tensor.TensorData(cm.ToList([]uint8(text)))
+	td := tensor.TensorData(cm.ToList([]uint8(b.String())))
 	t := tensor.NewTensor(d, tensor.TensorTypeU8, td)
-	inputResult := m.graphExecCtx.SetInput("prompt", t)
+	// TODO :: validate name ?
+	inputResult := m.graphExecCtx.SetInput("p", t)
 	if inputResult.IsErr() {
 		return &mlErr{inputResult.Err()}
 	}
@@ -51,7 +65,8 @@ func (m *Model) Input(text string, data any) error {
 }
 
 func (m *Model) Output() (string, error) {
-	outputResult := m.graphExecCtx.GetOutput("prompt")
+	// TODO :: validate name ?
+	outputResult := m.graphExecCtx.GetOutput("p")
 	if outputResult.IsErr() {
 		return "", &mlErr{outputResult.Err()}
 	}

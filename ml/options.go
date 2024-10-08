@@ -1,5 +1,10 @@
 package ml
 
+import (
+	"fmt"
+	"text/template"
+)
+
 type ModelOptions struct {
 	name         string
 	maxContext   uint32
@@ -42,8 +47,14 @@ func WithMaxContext(maxContext uint32) Option[*ModelOptions] {
 	})
 }
 
-func WithSystemPrompt(text string, data any) Option[*ModelOptions] {
-	return newFuncOption(func(m *ModelOptions) error {
+func WithSystemPrompt(text string) Option[*ModelOptions] {
+	return newFuncOption(func(m *ModelOptions) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic occurred: %v", r)
+			}
+		}()
+		template.Must(template.New("system").Parse(text))
 		m.systemPrompt = text
 		return nil
 	})
@@ -51,7 +62,8 @@ func WithSystemPrompt(text string, data any) Option[*ModelOptions] {
 
 func defaultModelOptions() *ModelOptions {
 	return &ModelOptions{
-		name:       "todo.ggml",
-		maxContext: 1000,
+		name:         "todo.ggml",
+		maxContext:   1000,
+		systemPrompt: defaultSystemPrompt,
 	}
 }
